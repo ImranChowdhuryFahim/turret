@@ -34,10 +34,6 @@ const (
 
 var (
 	errInvalidPath = errors.New("access denied: only /secrets and /access paths are allowed")
-	allowedFolders = []string{
-		"secrets",
-		"access",
-	}
 )
 
 type RepoAccess struct {
@@ -246,6 +242,7 @@ func newSFTPHandler(baseRoot string, session ssh.Session) *sftpHandler {
 }
 
 func checkSecretAccess(repo string, key ssh.PublicKey) bool {
+	println("REEPOO", repo)
 	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
 
 	repos, err := readAccessConfig()
@@ -279,21 +276,15 @@ func (s *sftpHandler) validateAndResolvePath(reqPath string, session ssh.Session
 
 	// Extract the first component of the path
 	parts := strings.Split(cleanPath, string(filepath.Separator))
+
 	if len(parts) < 2 { // Must have at least "/folder"
 		return "", errInvalidPath
 	}
 
-	if parts[1] == "secrets" {
-		println("VITORE", len(parts))
-		if len(parts) < 3 {
-			return "", errInvalidPath
-		}
-
-		// Check access rights for the repository
-		repoName := parts[2]
-		if !checkSecretAccess(repoName, session.PublicKey()) {
-			return "", fmt.Errorf("access denied: no write access to repository %s", repoName)
-		}
+	// Check access rights for the repository
+	repoName := parts[1]
+	if !checkSecretAccess(repoName, session.PublicKey()) {
+		return "", fmt.Errorf("access denied: no write access to repository %s", repoName)
 	}
 
 	// If allowed, resolve to the actual path

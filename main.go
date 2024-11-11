@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,9 +26,10 @@ import (
 )
 
 const (
-	host    = "localhost"
-	port    = "23235"
-	repoDir = ".repos"
+	host       = "localhost"
+	port       = "23235"
+	repoDir    = ".repos"
+	accessPath = "access/access.json"
 )
 
 var (
@@ -38,34 +40,240 @@ var (
 	}
 )
 
-type app struct {
-	access git.AccessLevel
+type RepoAccess struct {
+	Owner     string   `json:"owner"`
+	ReadKeys  []string `json:"read_keys"`
+	WriteKeys []string `json:"write_keys"`
 }
 
-func (a app) AuthRepo(asss string, dd ssh.PublicKey) git.AccessLevel {
-	println("HEY I AM HERE", asss)
-	return a.access
+type app struct{}
+
+// readAccessConfig reads the current state from the access file
+func readAccessConfig() (map[string]RepoAccess, error) {
+	repos := make(map[string]RepoAccess)
+
+	data, err := os.ReadFile(accessPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return repos, nil // Return empty config if file doesn't exist
+		}
+		return nil, fmt.Errorf("failed to read access file: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, fmt.Errorf("failed to parse access config: %w", err)
+	}
+
+	return repos, nil
 }
 
-func (a app) Push(repo string, _ ssh.PublicKey) {
-	log.Info("push", "repo", repo)
+// saveConfig saves the access configuration to file
+func saveConfig(repos map[string]RepoAccess) error {
+	data, err := json.MarshalIndent(repos, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(accessPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return nil
 }
 
-func (a app) Fetch(repo string, _ ssh.PublicKey) {
-	log.Info("fetch", "repo", repo)
+// AuthRepo implements git.RepoAuthenticator
+func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
+	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
+	log.Debug("checking auth", "repo", repo, "key", keyStr)
+
+	repos, err := readAccessConfig()
+	if err != nil {
+		log.Error("failed to read access config", "error", err)
+		return git.NoAccess
+	}
+
+	// Check if repo exists
+	access, exists := repos[repo]
+	if !exists {
+		// Create new repo with current key as owner
+		repos[repo] = RepoAccess{
+			Owner:     keyStr,
+			ReadKeys:  []string{},
+			WriteKeys: []string{},
+		}
+
+		// Save configuration
+		if err := saveConfig(repos); err != nil {
+			log.Error("failed to save config", "error", err)
+		}
+
+		log.Info("created new repo", "repo", repo, "owner", keyStr)
+		return git.ReadWriteAccess
+	}
+
+	// Check owner access
+	if access.Owner == keyStr {
+		return git.ReadWriteAccess
+	}
+
+	// Check write access
+	for _, writeKey := range access.WriteKeys {
+		if writeKey == keyStr {
+			return git.ReadWriteAccess
+		}
+	}
+
+	// Check read access
+	for _, readKey := range access.ReadKeys {
+		if readKey == keyStr {
+			return git.ReadOnlyAccess
+		}
+	}
+
+	return git.NoAccess
 }
+
+// AddRepoAccess adds access for a new key (must be called by owner)
+func (a app) AddRepoAccess(repo, ownerKeyStr, newKeyStr string, level git.AccessLevel) error {
+	repos, err := readAccessConfig()
+	if err != nil {
+		return fmt.Errorf("failed to read access config: %w", err)
+	}
+
+	access, exists := repos[repo]
+	if !exists {
+		return fmt.Errorf("repository %s does not exist", repo)
+	}
+
+	if access.Owner != ownerKeyStr {
+		return fmt.Errorf("only repository owner can modify access")
+	}
+
+	switch level {
+	case git.ReadOnlyAccess:
+		access.ReadKeys = append(access.ReadKeys, newKeyStr)
+	case git.ReadWriteAccess:
+		access.WriteKeys = append(access.WriteKeys, newKeyStr)
+	default:
+		return fmt.Errorf("invalid access level")
+	}
+
+	repos[repo] = access
+
+	if err := saveConfig(repos); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveRepoAccess removes access for a key (must be called by owner)
+func (a app) RemoveRepoAccess(repo, ownerKeyStr, keyToRemove string) error {
+	repos, err := readAccessConfig()
+	if err != nil {
+		return fmt.Errorf("failed to read access config: %w", err)
+	}
+
+	access, exists := repos[repo]
+	if !exists {
+		return fmt.Errorf("repository %s does not exist", repo)
+	}
+
+	if access.Owner != ownerKeyStr {
+		return fmt.Errorf("only repository owner can modify access")
+	}
+
+	// Remove from read keys
+	newReadKeys := make([]string, 0, len(access.ReadKeys))
+	for _, k := range access.ReadKeys {
+		if k != keyToRemove {
+			newReadKeys = append(newReadKeys, k)
+		}
+	}
+	access.ReadKeys = newReadKeys
+
+	// Remove from write keys
+	newWriteKeys := make([]string, 0, len(access.WriteKeys))
+	for _, k := range access.WriteKeys {
+		if k != keyToRemove {
+			newWriteKeys = append(newWriteKeys, k)
+		}
+	}
+	access.WriteKeys = newWriteKeys
+
+	repos[repo] = access
+
+	if err := saveConfig(repos); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return nil
+}
+
+func (a app) Push(repo string, key ssh.PublicKey) {
+	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
+	log.Info("push event", "repo", repo, "key", keyStr)
+}
+
+func (a app) Fetch(repo string, key ssh.PublicKey) {
+	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
+	log.Info("fetch event", "repo", repo, "key", keyStr)
+}
+
+// func (a app) AuthRepo(asss string, dd ssh.PublicKey) git.AccessLevel {
+// 	println("HEY I AM HERE", asss)
+// 	return a.access
+// }
+
+// func (a app) Push(repo string, _ ssh.PublicKey) {
+// 	log.Info("push", "repo", repo)
+// }
+
+// func (a app) Fetch(repo string, _ ssh.PublicKey) {
+// 	log.Info("fetch", "repo", repo)
+// }
 
 type sftpHandler struct {
 	baseRoot string
+	session  ssh.Session
 }
 
-func newSFTPHandler(baseRoot string) *sftpHandler {
+func newSFTPHandler(baseRoot string, session ssh.Session) *sftpHandler {
 	return &sftpHandler{
 		baseRoot: baseRoot,
+		session:  session,
 	}
 }
 
-func (s *sftpHandler) validateAndResolvePath(reqPath string) (string, error) {
+func checkSecretAccess(repo string, key ssh.PublicKey) bool {
+	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
+
+	repos, err := readAccessConfig()
+	if err != nil {
+		log.Error("failed to read access config", "error", err)
+		return false
+	}
+
+	access, exists := repos[repo]
+	if !exists {
+		return false
+	}
+
+	// Owner and users with write access can access secrets
+	if access.Owner == keyStr {
+		return true
+	}
+
+	for _, writeKey := range access.WriteKeys {
+		if writeKey == keyStr {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *sftpHandler) validateAndResolvePath(reqPath string, session ssh.Session) (string, error) {
 	// Clean the path to remove any '..' or multiple slashes
 	cleanPath := filepath.Clean(reqPath)
 
@@ -75,18 +283,17 @@ func (s *sftpHandler) validateAndResolvePath(reqPath string) (string, error) {
 		return "", errInvalidPath
 	}
 
-	// Check if the first folder is allowed
-	firstFolder := parts[1]
-	isAllowed := false
-	for _, allowed := range allowedFolders {
-		if firstFolder == allowed {
-			isAllowed = true
-			break
+	if parts[1] == "secrets" {
+		println("VITORE", len(parts))
+		if len(parts) < 3 {
+			return "", errInvalidPath
 		}
-	}
 
-	if !isAllowed {
-		return "", errInvalidPath
+		// Check access rights for the repository
+		repoName := parts[2]
+		if !checkSecretAccess(repoName, session.PublicKey()) {
+			return "", fmt.Errorf("access denied: no write access to repository %s", repoName)
+		}
 	}
 
 	// If allowed, resolve to the actual path
@@ -94,7 +301,12 @@ func (s *sftpHandler) validateAndResolvePath(reqPath string) (string, error) {
 }
 
 func (s *sftpHandler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
-	path, err := s.validateAndResolvePath(r.Filepath)
+	println("HE EKHANE")
+
+	println(base64.StdEncoding.EncodeToString(s.session.PublicKey().Marshal()))
+	// key := session.PublicKey()
+	// println("HHH", key)
+	path, err := s.validateAndResolvePath(r.Filepath, s.session)
 	if err != nil {
 		return nil, err
 	}
@@ -111,14 +323,14 @@ func (s *sftpHandler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 }
 
 func (s *sftpHandler) Filecmd(r *sftp.Request) error {
-	path, err := s.validateAndResolvePath(r.Filepath)
+	path, err := s.validateAndResolvePath(r.Filepath, s.session)
 	if err != nil {
 		return err
 	}
 
 	var targetPath string
 	if r.Target != "" {
-		targetPath, err = s.validateAndResolvePath(r.Target)
+		targetPath, err = s.validateAndResolvePath(r.Target, s.session)
 		if err != nil {
 			return err
 		}
@@ -143,7 +355,7 @@ func (s *sftpHandler) Filecmd(r *sftp.Request) error {
 }
 
 func (s *sftpHandler) Fileread(r *sftp.Request) (io.ReaderAt, error) {
-	path, err := s.validateAndResolvePath(r.Filepath)
+	path, err := s.validateAndResolvePath(r.Filepath, s.session)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +381,7 @@ func (l listerAt) ListAt(ls []fs.FileInfo, offset int64) (int, error) {
 }
 
 func (s *sftpHandler) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	path, err := s.validateAndResolvePath(r.Filepath)
+	path, err := s.validateAndResolvePath(r.Filepath, s.session)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +415,7 @@ func (s *sftpHandler) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 func sftpSubsystem(root string) ssh.SubsystemHandler {
 	return func(s ssh.Session) {
 		log.Info("sftp root", "path", root)
-		fs := newSFTPHandler(root)
+		fs := newSFTPHandler(root, s)
 		srv := sftp.NewRequestServer(s, sftp.Handlers{
 			FileGet:  fs,
 			FilePut:  fs,
@@ -221,8 +433,14 @@ func sftpSubsystem(root string) ssh.SubsystemHandler {
 }
 
 func main() {
-	a := app{git.ReadWriteAccess}
-	root, _ := filepath.Abs("./testdata")
+	if err := os.MkdirAll(filepath.Dir(accessPath), 0755); err != nil {
+		log.Error("Could not create access directory", "error", err)
+		return
+	}
+
+	// Create app instance with access config
+	a := app{}
+	root, _ := filepath.Abs("./secrets")
 	handler := scp.NewFileSystemHandler(root)
 	s, err := wish.NewServer(
 		wish.WithAddress(net.JoinHostPort(host, port)),

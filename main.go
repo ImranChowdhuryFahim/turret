@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	host       = "localhost"
+	host       = "0.0.0.0"
 	port       = "23235"
 	repoDir    = ".repos"
 	accessPath = "access/access.json"
@@ -44,14 +44,13 @@ type RepoAccess struct {
 
 type app struct{}
 
-// readAccessConfig reads the current state from the access file
 func readAccessConfig() (map[string]RepoAccess, error) {
 	repos := make(map[string]RepoAccess)
 
 	data, err := os.ReadFile(accessPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return repos, nil // Return empty config if file doesn't exist
+			return repos, nil
 		}
 		return nil, fmt.Errorf("failed to read access file: %w", err)
 	}
@@ -63,7 +62,6 @@ func readAccessConfig() (map[string]RepoAccess, error) {
 	return repos, nil
 }
 
-// saveConfig saves the access configuration to file
 func saveConfig(repos map[string]RepoAccess) error {
 	data, err := json.MarshalIndent(repos, "", "  ")
 	if err != nil {
@@ -77,7 +75,6 @@ func saveConfig(repos map[string]RepoAccess) error {
 	return nil
 }
 
-// AuthRepo implements git.RepoAuthenticator
 func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
 	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
 	log.Debug("checking auth", "repo", repo, "key", keyStr)
@@ -88,17 +85,15 @@ func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
 		return git.NoAccess
 	}
 
-	// Check if repo exists
 	access, exists := repos[repo]
 	if !exists {
-		// Create new repo with current key as owner
+
 		repos[repo] = RepoAccess{
 			Owner:     keyStr,
 			ReadKeys:  []string{},
 			WriteKeys: []string{},
 		}
 
-		// Save configuration
 		if err := saveConfig(repos); err != nil {
 			log.Error("failed to save config", "error", err)
 		}
@@ -107,19 +102,16 @@ func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
 		return git.ReadWriteAccess
 	}
 
-	// Check owner access
 	if access.Owner == keyStr {
 		return git.ReadWriteAccess
 	}
 
-	// Check write access
 	for _, writeKey := range access.WriteKeys {
 		if writeKey == keyStr {
 			return git.ReadWriteAccess
 		}
 	}
 
-	// Check read access
 	for _, readKey := range access.ReadKeys {
 		if readKey == keyStr {
 			return git.ReadOnlyAccess
@@ -129,7 +121,6 @@ func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
 	return git.NoAccess
 }
 
-// AddRepoAccess adds access for a new key (must be called by owner)
 func (a app) AddRepoAccess(repo, ownerKeyStr, newKeyStr string, level git.AccessLevel) error {
 	repos, err := readAccessConfig()
 	if err != nil {
@@ -163,7 +154,6 @@ func (a app) AddRepoAccess(repo, ownerKeyStr, newKeyStr string, level git.Access
 	return nil
 }
 
-// RemoveRepoAccess removes access for a key (must be called by owner)
 func (a app) RemoveRepoAccess(repo, ownerKeyStr, keyToRemove string) error {
 	repos, err := readAccessConfig()
 	if err != nil {
@@ -179,7 +169,6 @@ func (a app) RemoveRepoAccess(repo, ownerKeyStr, keyToRemove string) error {
 		return fmt.Errorf("only repository owner can modify access")
 	}
 
-	// Remove from read keys
 	newReadKeys := make([]string, 0, len(access.ReadKeys))
 	for _, k := range access.ReadKeys {
 		if k != keyToRemove {
@@ -188,7 +177,6 @@ func (a app) RemoveRepoAccess(repo, ownerKeyStr, keyToRemove string) error {
 	}
 	access.ReadKeys = newReadKeys
 
-	// Remove from write keys
 	newWriteKeys := make([]string, 0, len(access.WriteKeys))
 	for _, k := range access.WriteKeys {
 		if k != keyToRemove {
@@ -215,19 +203,6 @@ func (a app) Fetch(repo string, key ssh.PublicKey) {
 	keyStr := base64.StdEncoding.EncodeToString(key.Marshal())
 	log.Info("fetch event", "repo", repo, "key", keyStr)
 }
-
-// func (a app) AuthRepo(asss string, dd ssh.PublicKey) git.AccessLevel {
-// 	println("HEY I AM HERE", asss)
-// 	return a.access
-// }
-
-// func (a app) Push(repo string, _ ssh.PublicKey) {
-// 	log.Info("push", "repo", repo)
-// }
-
-// func (a app) Fetch(repo string, _ ssh.PublicKey) {
-// 	log.Info("fetch", "repo", repo)
-// }
 
 type sftpHandler struct {
 	baseRoot string
@@ -256,7 +231,6 @@ func checkSecretAccess(repo string, key ssh.PublicKey) bool {
 		return false
 	}
 
-	// Owner and users with write access can access secrets
 	if access.Owner == keyStr {
 		return true
 	}
@@ -271,32 +245,24 @@ func checkSecretAccess(repo string, key ssh.PublicKey) bool {
 }
 
 func (s *sftpHandler) validateAndResolvePath(reqPath string, session ssh.Session) (string, error) {
-	// Clean the path to remove any '..' or multiple slashes
+
 	cleanPath := filepath.Clean(reqPath)
 
-	// Extract the first component of the path
 	parts := strings.Split(cleanPath, string(filepath.Separator))
 
-	if len(parts) < 2 { // Must have at least "/folder"
+	if len(parts) < 2 {
 		return "", errInvalidPath
 	}
 
-	// Check access rights for the repository
 	repoName := parts[1]
 	if !checkSecretAccess(repoName, session.PublicKey()) {
 		return "", fmt.Errorf("access denied: no write access to repository %s", repoName)
 	}
 
-	// If allowed, resolve to the actual path
 	return filepath.Join(s.baseRoot, cleanPath), nil
 }
 
 func (s *sftpHandler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
-	println("HE EKHANE")
-
-	println(base64.StdEncoding.EncodeToString(s.session.PublicKey().Marshal()))
-	// key := session.PublicKey()
-	// println("HHH", key)
 	path, err := s.validateAndResolvePath(r.Filepath, s.session)
 	if err != nil {
 		return nil, err
@@ -429,7 +395,6 @@ func main() {
 		return
 	}
 
-	// Create app instance with access config
 	a := app{}
 	root, _ := filepath.Abs("./secrets")
 	handler := scp.NewFileSystemHandler(root)

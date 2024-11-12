@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  ssh-server:
+    build: .
+    ports:
+      - "23235:23235"
+    volumes:
+      - ./ssh:/app/.ssh
+      - ./repos:/app/.repos
+      - ./secrets:/app/secrets
+      - ./access:/app/access
+    restart: unless-stopped
+

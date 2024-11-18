@@ -6,6 +6,7 @@ services:
     ports:
       - "23235:23235"
     volumes:
+      - ~/.ssh/authorized_keys:/app/.ssh/authorized_keys:ro
       - ./ssh:/app/.ssh
       - ./repos:/app/.repos
       - ./secrets:/app/secrets

@@ -99,6 +99,12 @@ func (a app) AuthRepo(repo string, key ssh.PublicKey) git.AccessLevel {
 		}
 
 		log.Info("created new repo", "repo", repo, "owner", keyStr)
+
+		if err := os.MkdirAll(filepath.Join("secrets", repo), 0755); err != nil {
+			log.Error("Failed to create secrets dir", "error", err)
+		}
+
+		log.Info("created secrets dir for repo: ", repo)
 		return git.ReadWriteAccess
 	}
 
@@ -401,10 +407,7 @@ func main() {
 	s, err := wish.NewServer(
 		wish.WithAddress(net.JoinHostPort(host, port)),
 		wish.WithHostKeyPath(".ssh/id_ed25519"),
-		ssh.PublicKeyAuth(func(c ssh.Context, k ssh.PublicKey) bool {
-			println("AAXCHI", base64.StdEncoding.EncodeToString(k.Marshal()))
-			return true
-		}),
+		wish.WithAuthorizedKeys(".ssh/authorized_keys"),
 		ssh.PasswordAuth(func(ssh.Context, string) bool { return false }),
 		wish.WithSubsystem("sftp", sftpSubsystem(root)),
 		wish.WithMiddleware(

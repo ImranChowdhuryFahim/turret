@@ -1,4 +1,4 @@
-module turret-go
+module turret
 
 go 1.22.2
 

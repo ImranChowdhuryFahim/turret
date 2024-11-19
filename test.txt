@@ -1,1 +1,21 @@
-Hello WS
+docker-paas-git-ssh
+├── cmd
+│   └── server
+│       └── main.go
+├── internal
+│   ├── auth
+│   │   └── auth.go
+│   ├── config
+│   │   └── config.go
+│   ├── handlers
+│   │   ├── sftp.go
+│   │   └── scp.go
+│   ├── repo
+│   │   ├── access.go
+│   │   └── repo.go
+│   └── utils
+│       └── utils.go
+├── secrets
+│   └── (repositories created here)
+└── go.mod
+//sa

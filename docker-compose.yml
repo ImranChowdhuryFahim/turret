@@ -1,15 +1,16 @@
 version: '3.8'
 
 services:
-  ssh-server:
+  turret:
+    container_name: turret
     build: .
     ports:
       - "23235:23235"
     volumes:
       - ~/.ssh/authorized_keys:/app/.ssh/authorized_keys:ro
-      - ./ssh:/app/.ssh
-      - ./repos:/app/.repos
-      - ./secrets:/app/secrets
-      - ./access:/app/access
+      - ./_DATA/ssh:/app/.ssh
+      - ./_DATA/repos:/app/.repos
+      - ./_DATA/secrets:/app/secrets
+      - ./_DATA/access:/app/access
     restart: unless-stopped
 
